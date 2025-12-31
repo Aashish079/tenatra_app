@@ -1,11 +1,13 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
+import { useRouter } from 'expo-router';
 import React from 'react';
-import { StyleSheet, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, TouchableOpacity, View, ActivityIndicator, ScrollView } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/context/auth-context';
 
 const PROFILE_OPTIONS = [
   { id: '1', icon: 'history', title: 'Charging History' },
@@ -18,16 +20,39 @@ const PROFILE_OPTIONS = [
 
 export default function ProfileScreen() {
   const insets = useSafeAreaInsets();
+  const router = useRouter();
+  const { user, logout, isLoading } = useAuth();
+
+  const handleLogout = async () => {
+    await logout();
+    router.replace('/(auth)/login');
+  };
+
+  if (isLoading) {
+    return (
+      <ThemedView style={[styles.container, styles.loadingContainer]}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+      </ThemedView>
+    );
+  }
 
   return (
     <ThemedView style={[styles.container, { paddingTop: insets.top }]}>
-      {/* Profile Header */}
-      <View style={styles.profileHeader}>
+      <ScrollView 
+        showsVerticalScrollIndicator={false}
+        contentContainerStyle={styles.scrollContent}
+      >
+        {/* Profile Header */}
+        <View style={styles.profileHeader}>
         <View style={styles.avatarContainer}>
           <MaterialIcons name="person" size={48} color={Colors.primary} />
         </View>
-        <ThemedText type="title" style={styles.userName}>John Doe</ThemedText>
-        <ThemedText style={styles.userEmail}>john.doe@example.com</ThemedText>
+        <ThemedText type="title" style={styles.userName}>
+          {user?.name || 'Guest'}
+        </ThemedText>
+        <ThemedText style={styles.userEmail}>
+          {user?.email || 'Not signed in'}
+        </ThemedText>
       </View>
 
       {/* Stats */}
@@ -62,10 +87,11 @@ export default function ProfileScreen() {
       </View>
 
       {/* Logout Button */}
-      <TouchableOpacity style={styles.logoutButton} activeOpacity={0.7}>
+      <TouchableOpacity style={styles.logoutButton} activeOpacity={0.7} onPress={handleLogout}>
         <MaterialIcons name="logout" size={20} color={Colors.warning} />
         <ThemedText style={styles.logoutText}>Log Out</ThemedText>
       </TouchableOpacity>
+      </ScrollView>
     </ThemedView>
   );
 }
@@ -73,7 +99,14 @@ export default function ProfileScreen() {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
+  },
+  scrollContent: {
     paddingHorizontal: 16,
+    paddingBottom: 32,
+  },
+  loadingContainer: {
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   profileHeader: {
     alignItems: 'center',
