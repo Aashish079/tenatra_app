@@ -72,9 +72,6 @@ export default function LoginScreen() {
         >
           {/* Header */}
           <View style={styles.header}>
-            <View style={styles.logoCircle}>
-              <ThemedText style={styles.logoText}>T</ThemedText>
-            </View>
             <ThemedText style={styles.title}>Welcome Back</ThemedText>
             <ThemedText style={styles.subtitle}>Sign in to continue</ThemedText>
           </View>
@@ -217,7 +214,8 @@ const styles = StyleSheet.create({
     fontSize: 28,
     fontWeight: 'bold',
     color: '#1a1a1a',
-    marginBottom: 8,
+    marginBottom: 6,
+    marginTop: 6,
   },
   subtitle: {
     fontSize: 16,
