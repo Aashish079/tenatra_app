@@ -12,7 +12,8 @@ interface MapMarkerProps {
     longitude: number;
   };
   type: MarkerType;
-  onPress?: () => void;
+  onPress: () => void;
+  name?: string;
 }
 
 const markerConfig: Record<MarkerType, { icon: keyof typeof MaterialIcons.glyphMap; color: string; size: 'small' | 'large' }> = {
@@ -38,20 +39,27 @@ const markerConfig: Record<MarkerType, { icon: keyof typeof MaterialIcons.glyphM
   },
 };
 
-export function MapMarker({ coordinate, type, onPress }: MapMarkerProps) {
+// No callout text; popup removed per request
+
+export function MapMarker({ coordinate, type, onPress, name }: MapMarkerProps) {
   const config = markerConfig[type];
   const isLarge = config.size === 'large';
 
   return (
-    <Marker coordinate={coordinate} onPress={onPress}>
+    <Marker
+      coordinate={coordinate}
+      onPress={onPress}
+      anchor={{ x: 0.5, y: 1 }}
+    >
       {isLarge ? (
-        <View style={[styles.largeMarker, { backgroundColor: config.color }]}>
+        <View style={[styles.largeMarker, { backgroundColor: config.color }]}> 
           <MaterialIcons name={config.icon} size={24} color="white" />
         </View>
       ) : (
-        <View style={[styles.markerContainer, { backgroundColor: config.color }]}>
-          <MaterialIcons name={config.icon} size={16} color="white" />
-          <View style={[styles.markerTail, { borderTopColor: config.color }]} />
+        <View style={styles.wrapper} collapsable={false}>
+          <View style={[styles.markerContainer, { backgroundColor: config.color }]}> 
+            <MaterialIcons name={config.icon} size={16} color="white" />
+          </View>
         </View>
       )}
     </Marker>
@@ -59,9 +67,14 @@ export function MapMarker({ coordinate, type, onPress }: MapMarkerProps) {
 }
 
 const styles = StyleSheet.create({
-  markerContainer: {
+  wrapper: {
     width: 36,
-    height: 36,
+    height: 46, // 36 circle + ~10 tail
+    alignItems: 'center',
+  },
+  markerContainer: {
+    width: 30,
+    height: 30,
     borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
@@ -70,17 +83,6 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.25,
     shadowRadius: 3.84,
     elevation: 5,
-  },
-  markerTail: {
-    position: 'absolute',
-    bottom: -8,
-    width: 0,
-    height: 0,
-    borderLeftWidth: 8,
-    borderRightWidth: 8,
-    borderTopWidth: 10,
-    borderLeftColor: 'transparent',
-    borderRightColor: 'transparent',
   },
   largeMarker: {
     width: 56,
