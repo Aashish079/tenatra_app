@@ -1,11 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
-import { AlertButton, FilterButton, MapMarker, SearchBar } from '@/components/map';
+import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
+import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
-import * as Location from 'expo-location';
 
 // Sample marker data - replace with actual data from your API
 type MarkerType = 'charging' | 'carService' | 'maintenance';
@@ -86,7 +81,8 @@ const SAMPLE_MARKERS: Marker[] = [
   },
 ];
 
-const INITIAL_REGION: Region = {
+// Fallback region if location is not available
+const FALLBACK_REGION = {
   latitude: 37.782,
   longitude: -122.406,
   latitudeDelta: 0.04,
@@ -95,26 +91,49 @@ const INITIAL_REGION: Region = {
 
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
+  const mapRef = useRef<MapView>(null);
   const [searchQuery, setSearchQuery] = useState('');
-  const mapRef = useRef<MapView | null>(null);
-  const [region, setRegion] = useState<Region>(INITIAL_REGION);
-  const [hasLocationPermission, setHasLocationPermission] = useState<boolean>(false);
-  const [showFilters, setShowFilters] = useState<boolean>(false);
-  const [filters, setFilters] = useState<{ charging: boolean; carService: boolean; maintenance: boolean }>({
-    charging: true,
-    carService: true,
-    maintenance: true,
-  });
-  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
-  const [routeCoords, setRouteCoords] = useState<Array<{ latitude: number; longitude: number }>>([]);
-  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
-  const [detailsVisible, setDetailsVisible] = useState<boolean>(false);
-  const [routeDistance, setRouteDistance] = useState<number | null>(null);
+  const [region, setRegion] = useState<Region | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
-  const selectedMarker = useMemo(() => {
-    if (!selectedMarkerId) return null;
-    return SAMPLE_MARKERS.find((m) => m.id === selectedMarkerId) ?? null;
-  }, [selectedMarkerId]);
+  useEffect(() => {
+    getCurrentLocation();
+  }, []);
+
+  const getCurrentLocation = async () => {
+    try {
+      // Request permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      
+      if (status !== 'granted') {
+        setLocationError('Location permission denied');
+        setRegion(FALLBACK_REGION);
+        setIsLoading(false);
+        return;
+      }
+
+      // Get current location
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
+
+      const newRegion: Region = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.04,
+        longitudeDelta: 0.04,
+      };
+
+      setRegion(newRegion);
+      setIsLoading(false);
+    } catch (error) {
+      console.error('Error getting location:', error);
+      setLocationError('Could not get current location');
+      setRegion(FALLBACK_REGION);
+      setIsLoading(false);
+    }
+  };
 
   const handleFilterPress = () => {
     setShowFilters((prev) => !prev);
@@ -152,80 +171,32 @@ export default function MapScreen() {
     }
   };
 
-  useEffect(() => {
-    const getUserLocation = async () => {
-      try {
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        const granted = status === 'granted';
-        setHasLocationPermission(granted);
-        if (!granted) {
-          return;
-        }
-
-        const loc = await Location.getCurrentPositionAsync({});
-        const nextRegion: Region = {
-          latitude: loc.coords.latitude,
-          longitude: loc.coords.longitude,
-          latitudeDelta: 0.02,
-          longitudeDelta: 0.02,
-        };
-        setRegion(nextRegion);
-        setUserLocation({ latitude: loc.coords.latitude, longitude: loc.coords.longitude });
-        if (mapRef.current) {
-          mapRef.current.animateToRegion(nextRegion, 600);
-        }
-      } catch (e) {
-        console.warn('Location error', e);
-      }
-    };
-
-    getUserLocation();
-  }, []);
-
-  async function fetchRoute(
-    origin: { latitude: number; longitude: number },
-    dest: { latitude: number; longitude: number }
-  ) {
+  const goToCurrentLocation = async () => {
     try {
-      // Use OSRM public demo server (no API key) for routing in dev.
-      // For production, use Google Directions, Mapbox, or OpenRouteService via a backend proxy.
-      const url = `https://router.project-osrm.org/route/v1/driving/${origin.longitude},${origin.latitude};${dest.longitude},${dest.latitude}?overview=full&geometries=geojson`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const coords = data?.routes?.[0]?.geometry?.coordinates || [];
-      const latlng = coords.map((c: [number, number]) => ({ latitude: c[1], longitude: c[0] }));
-      setRouteCoords(latlng);
-      const distance = data?.routes?.[0]?.distance ?? null; // meters
-      if (typeof distance === 'number') {
-        setRouteDistance(distance);
-      } else {
-        setRouteDistance(null);
-      }
-    } catch (e) {
-      console.warn('Route fetch failed', e);
-      setRouteCoords([]);
-      setRouteDistance(null);
-    }
-  }
+      const location = await Location.getCurrentPositionAsync({
+        accuracy: Location.Accuracy.Balanced,
+      });
 
-  async function fetchDistance(
-    origin: { latitude: number; longitude: number },
-    dest: { latitude: number; longitude: number }
-  ) {
-    try {
-      const url = `https://router.project-osrm.org/route/v1/driving/${origin.longitude},${origin.latitude};${dest.longitude},${dest.latitude}?overview=false`;
-      const res = await fetch(url);
-      const data = await res.json();
-      const distance = data?.routes?.[0]?.distance ?? null; // meters
-      if (typeof distance === 'number') {
-        setRouteDistance(distance);
-      } else {
-        setRouteDistance(null);
-      }
-    } catch (e) {
-      console.warn('Distance fetch failed', e);
-      setRouteDistance(null);
+      const newRegion: Region = {
+        latitude: location.coords.latitude,
+        longitude: location.coords.longitude,
+        latitudeDelta: 0.02,
+        longitudeDelta: 0.02,
+      };
+
+      mapRef.current?.animateToRegion(newRegion, 1000);
+    } catch (error) {
+      console.error('Error getting location:', error);
     }
+  };
+
+  if (isLoading) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" color={Colors.primary} />
+        <ThemedText style={styles.loadingText}>Getting your location...</ThemedText>
+      </View>
+    );
   }
 
   return (
@@ -234,9 +205,8 @@ export default function MapScreen() {
         ref={mapRef}
         style={styles.map}
         provider={PROVIDER_GOOGLE}
-        initialRegion={INITIAL_REGION}
-        region={region}
-        showsUserLocation={hasLocationPermission}
+        initialRegion={region || FALLBACK_REGION}
+        showsUserLocation
         showsMyLocationButton={false}
         zoomEnabled={true}
         zoomControlEnabled={true}
@@ -357,6 +327,17 @@ const styles = StyleSheet.create({
   },
   map: {
     flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  loadingText: {
+    marginTop: 12,
+    fontSize: 16,
+    color: Colors.textSecondary,
   },
   searchContainer: {
     position: 'absolute',
