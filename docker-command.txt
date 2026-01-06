@@ -1,0 +1,1 @@
+docker run --rm -it -p 19000-19002:19000-19002 -v ${PWD}:/app -w /app node:24-alpine npx expo start --tunnel
