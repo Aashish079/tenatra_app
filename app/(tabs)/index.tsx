@@ -1,9 +1,20 @@
 import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
+import * as Location from 'expo-location';
+import React, { useEffect, useRef, useState } from 'react';
+import {
+  ActivityIndicator,
+  Modal,
+  StyleSheet,
+  Text,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import MapView, { Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Sample marker data - replace with actual data from your API
-type MarkerType = 'charging' | 'carService' | 'maintenance';
 
 interface Marker {
   id: string;
@@ -96,6 +107,15 @@ export default function MapScreen() {
   const [region, setRegion] = useState<Region | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [locationError, setLocationError] = useState<string | null>(null);
+  const [showFilters, setShowFilters] = useState(false);
+  const [filters, setFilters] = useState({ charging: true, carService: true, maintenance: true });
+  const [selectedMarkerId, setSelectedMarkerId] = useState<string | null>(null);
+  const [detailsVisible, setDetailsVisible] = useState(false);
+  const [routeDistance, setRouteDistance] = useState<number | null>(null);
+  const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+
+  const selectedMarker = SAMPLE_MARKERS.find((m) => m.id === selectedMarkerId) ?? null;
 
   useEffect(() => {
     getCurrentLocation();
@@ -126,12 +146,58 @@ export default function MapScreen() {
       };
 
       setRegion(newRegion);
+      setUserLocation({ latitude: location.coords.latitude, longitude: location.coords.longitude });
       setIsLoading(false);
     } catch (error) {
       console.error('Error getting location:', error);
       setLocationError('Could not get current location');
       setRegion(FALLBACK_REGION);
       setIsLoading(false);
+    }
+  };
+
+  /** Haversine distance in metres between two coordinates */
+  const haversineDistance = (
+    from: { latitude: number; longitude: number },
+    to: { latitude: number; longitude: number }
+  ): number => {
+    const R = 6371000;
+    const toRad = (deg: number) => (deg * Math.PI) / 180;
+    const dLat = toRad(to.latitude - from.latitude);
+    const dLon = toRad(to.longitude - from.longitude);
+    const a =
+      Math.sin(dLat / 2) ** 2 +
+      Math.cos(toRad(from.latitude)) * Math.cos(toRad(to.latitude)) * Math.sin(dLon / 2) ** 2;
+    return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+  };
+
+  const fetchDistance = (
+    from: { latitude: number; longitude: number },
+    to: { latitude: number; longitude: number }
+  ) => {
+    const dist = haversineDistance(from, to);
+    setRouteDistance(dist);
+  };
+
+  const fetchRoute = async (
+    from: { latitude: number; longitude: number },
+    to: { latitude: number; longitude: number }
+  ) => {
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson`;
+      const res = await fetch(url);
+      const data = await res.json();
+      if (data.routes && data.routes.length > 0) {
+        const coords = data.routes[0].geometry.coordinates.map(
+          ([lon, lat]: [number, number]) => ({ latitude: lat, longitude: lon })
+        );
+        setRouteCoords(coords);
+        setRouteDistance(data.routes[0].distance);
+      }
+    } catch (e) {
+      console.warn('Route fetch failed, using straight line', e);
+      setRouteCoords([from, to]);
+      setRouteDistance(haversineDistance(from, to));
     }
   };
 
