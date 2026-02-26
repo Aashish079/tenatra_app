@@ -1,90 +1,28 @@
+import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Location from 'expo-location';
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import MapView, { Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
-
-// Sample marker data - replace with actual data from your API
+import { scanStations } from '@/services/dynamodb';
 
 interface Marker {
   id: string;
-  name: string; // Added name property
+  name: string;
   coordinate: { latitude: number; longitude: number };
   type: MarkerType;
+  // DynamoDB extra fields
+  plugType?: string;
+  powerKW?: number;
+  operator?: string;
+  chargingPoints?: number;
+  country?: string;
+  district?: string;
 }
-
-const SAMPLE_MARKERS: Marker[] = [
-  // --- San Francisco Locations ---
-  { id: '1', name: 'SF Charging Station A', coordinate: { latitude: 37.785, longitude: -122.406 }, type: 'charging' },
-  { id: '2', name: 'SF Charging Station B', coordinate: { latitude: 37.778, longitude: -122.412 }, type: 'charging' },
-  { id: '3', name: 'SF Charging Station C', coordinate: { latitude: 37.782, longitude: -122.395 }, type: 'charging' },
-  { id: '4', name: 'Market St. Car Service', coordinate: { latitude: 37.790, longitude: -122.420 }, type: 'carService' },
-  { id: '5', name: 'SOMA Car Clinic', coordinate: { latitude: 37.775, longitude: -122.400 }, type: 'carService' },
-  { id: '6', name: 'Mission District Auto', coordinate: { latitude: 37.788, longitude: -122.390 }, type: 'carService' },
-  { id: '7', name: 'Bay Bridge Maintenance', coordinate: { latitude: 37.770, longitude: -122.415 }, type: 'maintenance' },
-  { id: '8', name: 'Civic Center Repairs', coordinate: { latitude: 37.795, longitude: -122.408 }, type: 'maintenance' },
-  { id: '9', name: 'Union Square Tune-up', coordinate: { latitude: 37.780, longitude: -122.425 }, type: 'maintenance' },
-
-  // --- Penang (USM Area) Locations ---
-  { 
-    id: '10', 
-    name: 'Lotus’s Sungai Dua EV Hub',
-    coordinate: { latitude: 5.35097, longitude: 100.29715 }, 
-    type: 'charging' 
-  },
-  { 
-    id: '11', 
-    name: 'Queensbay Mall EV Station',
-    coordinate: { latitude: 5.3346, longitude: 100.3066 }, 
-    type: 'charging' 
-  },
-  { 
-    id: '12', 
-    name: 'Ivory Plaza Charging Point',
-    coordinate: { latitude: 5.35802, longitude: 100.2926 }, 
-    type: 'charging' 
-  },
-  { 
-    id: '13', 
-    name: 'Perodua Service Sungai Nibong',
-    coordinate: { latitude: 5.3435, longitude: 100.3012 }, 
-    type: 'carService' 
-  },
-  { 
-    id: '14', 
-    name: 'Shell Gelugor Auto Service',
-    coordinate: { latitude: 5.37685, longitude: 100.30779 }, 
-    type: 'carService' 
-  },
-  { 
-    id: '15', 
-    name: 'USM Sungai Dua Workshop',
-    coordinate: { latitude: 5.35379, longitude: 100.30167 }, 
-    type: 'carService' 
-  },
-  { 
-    id: '16', 
-    name: 'Petronas Sungai Dua Maintenance',
-    coordinate: { latitude: 5.3481, longitude: 100.3005 }, 
-    type: 'maintenance' 
-  },
-  { 
-    id: '17', 
-    name: 'Caltex Bukit Gambir Center',
-    coordinate: { latitude: 5.3562, longitude: 100.2945 }, 
-    type: 'maintenance' 
-  },
-  { 
-    id: '18', 
-    name: 'Bayan Lepas Tire & Battery',
-    coordinate: { latitude: 5.3315, longitude: 100.3001 }, 
-    type: 'maintenance' 
-  },
-];
 
 // Fallback region if location is not available
 const FALLBACK_REGION = {
@@ -108,12 +46,63 @@ export default function MapScreen() {
   const [routeDistance, setRouteDistance] = useState<number | null>(null);
   const [userLocation, setUserLocation] = useState<{ latitude: number; longitude: number } | null>(null);
   const [routeCoords, setRouteCoords] = useState<{ latitude: number; longitude: number }[]>([]);
+  const [markers, setMarkers] = useState<Marker[]>([]);
+  const [markersLoading, setMarkersLoading] = useState(true);
+  const [visibleRegion, setVisibleRegion] = useState<Region | null>(null);
+  // Search-based custom origin (replaces GPS as the "from" point for routing)
+  const [searchedLocation, setSearchedLocation] = useState<{ latitude: number; longitude: number; label: string } | null>(null);
+  const [isGeocoding, setIsGeocoding] = useState(false);
 
-  const selectedMarker = SAMPLE_MARKERS.find((m) => m.id === selectedMarkerId) ?? null;
+  const selectedMarker = markers.find((m) => m.id === selectedMarkerId) ?? null;
+
+  // Only render markers inside the visible map area (+ 60 % buffer on each side).
+  // Recomputes only when the region, filter settings, or marker list changes.
+  const VIEWPORT_BUFFER = 0.6;
+  const visibleMarkers = useMemo(() => {
+    const r = visibleRegion ?? region;
+    if (!r) return [];
+    const latMin = r.latitude - r.latitudeDelta * (0.5 + VIEWPORT_BUFFER);
+    const latMax = r.latitude + r.latitudeDelta * (0.5 + VIEWPORT_BUFFER);
+    const lonMin = r.longitude - r.longitudeDelta * (0.5 + VIEWPORT_BUFFER);
+    const lonMax = r.longitude + r.longitudeDelta * (0.5 + VIEWPORT_BUFFER);
+    return markers.filter((m) => {
+      const { latitude: lat, longitude: lon } = m.coordinate;
+      if (lat < latMin || lat > latMax || lon < lonMin || lon > lonMax) return false;
+      if (m.type === 'charging' && !filters.charging) return false;
+      if (m.type === 'carService' && !filters.carService) return false;
+      if (m.type === 'maintenance' && !filters.maintenance) return false;
+      return true;
+    });
+  }, [markers, visibleRegion, region, filters]);
 
   useEffect(() => {
     getCurrentLocation();
+    fetchMarkers();
   }, []);
+
+  const fetchMarkers = async () => {
+    try {
+      setMarkersLoading(true);
+      const stations = await scanStations();
+      const mapped: Marker[] = stations.map((s) => ({
+        id: s.Station_ID,
+        name: s.Station_Name,
+        coordinate: { latitude: s.Latitude, longitude: s.Longitude },
+        type: 'charging' as MarkerType,
+        plugType: s.Plug_Type,
+        powerKW: s.Power_kW,
+        operator: s.Operator,
+        chargingPoints: s.Charging_Points,
+        country: s.Country,
+        district: s.District,
+      }));
+      setMarkers(mapped);
+    } catch (err) {
+      console.error('Failed to load stations from DynamoDB:', err);
+    } finally {
+      setMarkersLoading(false);
+    }
+  };
 
   const getCurrentLocation = async () => {
     try {
@@ -199,6 +188,37 @@ export default function MapScreen() {
     setShowFilters((prev) => !prev);
   };
 
+  /** Geocode typed address, drop a pin, and pan the map there */
+  const handleSearchSubmit = async () => {
+    if (!searchQuery.trim()) return;
+    setIsGeocoding(true);
+    try {
+      const results = await Location.geocodeAsync(searchQuery.trim());
+      if (results.length === 0) {
+        alert(`No location found for "${searchQuery}"`);
+        return;
+      }
+      const { latitude, longitude } = results[0];
+      const newRegion: Region = { latitude, longitude, latitudeDelta: 0.04, longitudeDelta: 0.04 };
+      setSearchedLocation({ latitude, longitude, label: searchQuery.trim() });
+      setRouteCoords([]); // clear any old route
+      setRouteDistance(null);
+      mapRef.current?.animateToRegion(newRegion, 700);
+    } catch (e) {
+      console.error('Geocode error', e);
+      alert('Could not find that location. Try a more specific address.');
+    } finally {
+      setIsGeocoding(false);
+    }
+  };
+
+  const handleSearchClear = () => {
+    setSearchQuery('');
+    setSearchedLocation(null);
+    setRouteCoords([]);
+    setRouteDistance(null);
+  };
+
   const handleAlertPress = async () => {
     // Recenter map to the user's current location
     try {
@@ -224,10 +244,10 @@ export default function MapScreen() {
     setSelectedMarkerId(markerId);
     setDetailsVisible(true);
     setRouteDistance(null);
-    const m = SAMPLE_MARKERS.find((x) => x.id === markerId);
-    if (m && userLocation) {
-      // Fetch only distance (do not draw route yet)
-      fetchDistance(userLocation, m.coordinate);
+    const m = markers.find((x) => x.id === markerId);
+    const origin = searchedLocation ?? userLocation;
+    if (m && origin) {
+      fetchDistance(origin, m.coordinate);
     }
   };
 
@@ -266,6 +286,7 @@ export default function MapScreen() {
         style={styles.map}
         provider={PROVIDER_GOOGLE}
         initialRegion={region || FALLBACK_REGION}
+        onRegionChangeComplete={(r) => setVisibleRegion(r)}
         showsUserLocation
         showsMyLocationButton={false}
         zoomEnabled={true}
@@ -281,11 +302,15 @@ export default function MapScreen() {
             strokeWidth={5}
           />
         )}
-        {SAMPLE_MARKERS.filter((m) =>
-          (m.type === 'charging' && filters.charging) ||
-          (m.type === 'carService' && filters.carService) ||
-          (m.type === 'maintenance' && filters.maintenance)
-        ).map((marker) => (
+        {/* Custom searched-location pin */}
+        {searchedLocation && (
+          <Marker
+            coordinate={searchedLocation}
+            pinColor={Colors.secondary}
+            title={searchedLocation.label}
+          />
+        )}
+        {visibleMarkers.map((marker) => (
           <MapMarker
             key={marker.id}
             name={marker.name}
@@ -301,10 +326,26 @@ export default function MapScreen() {
         <SearchBar
           value={searchQuery}
           onChangeText={setSearchQuery}
+          onSubmit={handleSearchSubmit}
+          onClear={handleSearchClear}
+          isLoading={isGeocoding}
           style={styles.searchBar}
         />
         <FilterButton onPress={handleFilterPress} />
       </View>
+
+      {/* Searched-location banner */}
+      {searchedLocation && (
+        <View style={[styles.locationBanner, { top: insets.top + 72 }]}>
+          <MaterialIcons name="place" size={14} color={Colors.secondary} />
+          <Text style={styles.locationBannerText} numberOfLines={1}>
+            From: {searchedLocation.label}
+          </Text>
+          <TouchableOpacity onPress={handleSearchClear} hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}>
+            <MaterialIcons name="close" size={14} color="#666" />
+          </TouchableOpacity>
+        </View>
+      )}
 
       {/* Alert Button */}
       <AlertButton
@@ -322,6 +363,23 @@ export default function MapScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{selectedMarker?.name ?? 'No marker selected'}</Text>
+            {selectedMarker?.plugType != null && (
+              <Text style={styles.modalSubtitle}>Plug: {selectedMarker.plugType}</Text>
+            )}
+            {selectedMarker?.powerKW != null && (
+              <Text style={styles.modalSubtitle}>Power: {selectedMarker.powerKW} kW</Text>
+            )}
+            {selectedMarker?.operator != null && (
+              <Text style={styles.modalSubtitle}>Operator: {selectedMarker.operator}</Text>
+            )}
+            {selectedMarker?.chargingPoints != null && (
+              <Text style={styles.modalSubtitle}>Points: {selectedMarker.chargingPoints}</Text>
+            )}
+            {(selectedMarker?.district ?? selectedMarker?.country) != null && (
+              <Text style={styles.modalSubtitle}>
+                {[selectedMarker?.district, selectedMarker?.country].filter(Boolean).join(', ')}
+              </Text>
+            )}
             {routeDistance != null && (
               <Text style={styles.modalSubtitle}>Distance: {(routeDistance / 1000).toFixed(2)} km</Text>
             )}
@@ -329,8 +387,9 @@ export default function MapScreen() {
               <TouchableOpacity
                 style={[styles.modalButton, { backgroundColor: Colors.secondary }]}
                 onPress={async () => {
-                  if (selectedMarker && userLocation) {
-                    await fetchRoute(userLocation, selectedMarker.coordinate);
+                  const origin = searchedLocation ?? userLocation;
+                  if (selectedMarker && origin) {
+                    await fetchRoute(origin, selectedMarker.coordinate);
                   }
                 }}
               >
@@ -505,5 +564,27 @@ const styles = StyleSheet.create({
   filterChipText: {
     fontSize: 12,
     color: '#333',
+  },
+  locationBanner: {
+    position: 'absolute',
+    left: 16,
+    right: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: 'rgba(255,255,255,0.95)',
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.12,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  locationBannerText: {
+    flex: 1,
+    fontSize: 12,
+    color: '#444',
   },
 });
