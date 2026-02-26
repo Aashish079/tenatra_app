@@ -1,9 +1,14 @@
+import * as Location from 'expo-location';
+import React, { useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import MapView, { Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
 import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
 
 // Sample marker data - replace with actual data from your API
-type MarkerType = 'charging' | 'carService' | 'maintenance';
 
 interface Marker {
   id: string;
