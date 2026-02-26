@@ -7,18 +7,6 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
-import * as Location from 'expo-location';
-import React, { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Modal,
-  StyleSheet,
-  Text,
-  TouchableOpacity,
-  View,
-} from 'react-native';
-import MapView, { Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 // Sample marker data - replace with actual data from your API
 
@@ -321,7 +309,7 @@ export default function MapScreen() {
       {/* Alert Button */}
       <AlertButton
         onPress={handleAlertPress}
-        style={[styles.alertButton, { bottom: 24 }]}
+        style={StyleSheet.flatten([styles.alertButton, { bottom: 24 }])}
       />
 
       {/* Details Modal */}
@@ -409,7 +397,7 @@ const styles = StyleSheet.create({
   loadingText: {
     marginTop: 12,
     fontSize: 16,
-    color: Colors.textSecondary,
+    color: Colors.secondary,
   },
   searchContainer: {
     position: 'absolute',
