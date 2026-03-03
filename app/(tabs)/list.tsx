@@ -1,7 +1,7 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Location from 'expo-location';
-import React, { useEffect, useState } from 'react';
-import { ActivityIndicator, FlatList, StyleSheet, View } from 'react-native';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, StyleSheet, TouchableOpacity, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ThemedText } from '@/components/themed-text';
@@ -9,11 +9,16 @@ import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { ChargingStation, scanStations } from '@/services/dynamodb';
 
-const MAX_DISTANCE_KM = 5;
+const DEFAULT_MAX_DISTANCE_KM = 1;
 
 interface NearbyStation extends ChargingStation {
   distanceKm: number;
 }
+
+// DEV: Toggle to use a mock location for testing. Default is false.
+// Set to `true` and edit `MOCK_LOCATION` to test from a specific lat/lon.
+const USE_MOCK_LOCATION = true;
+const MOCK_LOCATION: { latitude: number; longitude: number } = { latitude: 5.419102983272989, longitude: 100.32032643665518 };
 
 /** Haversine distance in kilometres between two coordinates */
 function haversineKm(
@@ -33,53 +38,62 @@ function haversineKm(
 export default function ListScreen() {
   const insets = useSafeAreaInsets();
 
+  // User-selectable max distance (km)
+  const [maxDistanceKm, setMaxDistanceKm] = useState<number>(DEFAULT_MAX_DISTANCE_KM);
+
   const [stations, setStations] = useState<NearbyStation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isMounted = useRef(true);
+
+  const fetchStations = useCallback(async ({ isRefresh = false } = {}) => {
+    try {
+      if (isRefresh) setRefreshing(true);
+      else setLoading(true);
+      setError(null);
+
+      // Request location permission
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        if (isMounted.current) setError('Location permission is required to show nearby stations.');
+        return;
+      }
+
+      const locPromise = USE_MOCK_LOCATION
+        ? Promise.resolve({ coords: MOCK_LOCATION })
+        : Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+
+      const [loc, allStations] = await Promise.all([locPromise, scanStations()]);
+      if (!isMounted.current) return;
+
+      const { latitude, longitude } = loc.coords;
+
+      const nearby: NearbyStation[] = allStations
+        .map((s) => ({
+          ...s,
+          distanceKm: haversineKm(latitude, longitude, s.Latitude, s.Longitude),
+        }))
+        .filter((s) => s.distanceKm <= maxDistanceKm)
+        .sort((a, b) => a.distanceKm - b.distanceKm);
+
+      if (isMounted.current) setStations(nearby);
+    } catch (e) {
+      if (isMounted.current) setError('Failed to load stations. Please try again.');
+      console.error(e);
+    } finally {
+      if (isMounted.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
+    }
+  }, [maxDistanceKm]);
 
   useEffect(() => {
-    let cancelled = false;
-
-    (async () => {
-      try {
-        setLoading(true);
-        setError(null);
-
-        // Request location permission
-        const { status } = await Location.requestForegroundPermissionsAsync();
-        if (status !== 'granted') {
-          setError('Location permission is required to show nearby stations.');
-          return;
-        }
-
-        const [loc, allStations] = await Promise.all([
-          Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced }),
-          scanStations(),
-        ]);
-
-        if (cancelled) return;
-
-        const { latitude, longitude } = loc.coords;
-
-        const nearby: NearbyStation[] = allStations
-          .map((s) => ({
-            ...s,
-            distanceKm: haversineKm(latitude, longitude, s.Latitude, s.Longitude),
-          }))
-          .filter((s) => s.distanceKm <= MAX_DISTANCE_KM)
-          .sort((a, b) => a.distanceKm - b.distanceKm);
-
-        setStations(nearby);
-      } catch (e) {
-        if (!cancelled) setError('Failed to load stations. Please try again.');
-        console.error(e);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, []);
+    isMounted.current = true;
+    fetchStations();
+    return () => { isMounted.current = false; };
+  }, [fetchStations]);
 
   const renderStation = ({ item }: { item: NearbyStation }) => (
     <ThemedView style={styles.stationCard}>
@@ -129,11 +143,28 @@ export default function ListScreen() {
   return (
     <ThemedView style={[styles.container, { paddingTop: insets.top }]}>
       <ThemedText type="title" style={styles.header}>Nearby Stations</ThemedText>
-      <ThemedText style={styles.subheader}>Within {MAX_DISTANCE_KM} km · {stations.length} found</ThemedText>
+
+      <View style={styles.selectorRow}>
+        {[1, 2, 5, 10].map((d) => (
+          <TouchableOpacity
+            key={d}
+            onPress={() => setMaxDistanceKm(d)}
+            activeOpacity={0.8}
+            style={[
+              styles.selectorOption,
+              maxDistanceKm === d ? styles.selectorOptionActive : null,
+            ]}
+          >
+            <ThemedText style={[styles.selectorText, maxDistanceKm === d ? styles.selectorTextActive : null]}>{d} km</ThemedText>
+          </TouchableOpacity>
+        ))}
+      </View>
+
+      <ThemedText style={styles.subheader}>Within {maxDistanceKm} km · {stations.length} found</ThemedText>
       {stations.length === 0 ? (
         <View style={styles.centered}>
           <MaterialIcons name="ev-station" size={48} color="#ccc" />
-          <ThemedText style={styles.statusText}>No stations within {MAX_DISTANCE_KM} km.</ThemedText>
+          <ThemedText style={styles.statusText}>No stations within {maxDistanceKm} km.</ThemedText>
         </View>
       ) : (
         <FlatList
@@ -142,6 +173,8 @@ export default function ListScreen() {
           keyExtractor={(item) => item.Station_ID}
           contentContainerStyle={styles.listContent}
           showsVerticalScrollIndicator={false}
+          refreshing={refreshing}
+          onRefresh={() => fetchStations({ isRefresh: true })}
         />
       )}
     </ThemedView>
@@ -220,5 +253,29 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: Colors.primary,
     fontWeight: '600',
+  },
+  selectorRow: {
+    flexDirection: 'row',
+    paddingHorizontal: 16,
+    paddingBottom: 8,
+    gap: 8,
+    marginTop: 8,
+  },
+  selectorOption: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 999,
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  selectorOptionActive: {
+    backgroundColor: Colors.primary,
+  },
+  selectorText: {
+    fontSize: 13,
+    color: '#444',
+  },
+  selectorTextActive: {
+    color: '#fff',
+    fontWeight: '700',
   },
 });

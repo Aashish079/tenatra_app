@@ -13,6 +13,7 @@ export interface ChargingStation {
   Country?: string;
   Province?: string;
   District?: string;
+  PBT?: string;
   Plug_Type?: PlugType;
   Power_kW?: number;
   Operator?: string;

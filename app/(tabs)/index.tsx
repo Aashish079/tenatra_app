@@ -1,7 +1,7 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Location from 'expo-location';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -16,12 +16,15 @@ interface Marker {
   coordinate: { latitude: number; longitude: number };
   type: MarkerType;
   // DynamoDB extra fields
+  country?: string;
+  operator?: string;
   plugType?: string;
   powerKW?: number;
-  operator?: string;
   chargingPoints?: number;
-  country?: string;
   district?: string;
+  province?: string;
+  pbt?: string;
+  operationalYear?: number;
 }
 
 // Fallback region if location is not available
@@ -89,12 +92,15 @@ export default function MapScreen() {
         name: s.Station_Name,
         coordinate: { latitude: s.Latitude, longitude: s.Longitude },
         type: 'charging' as MarkerType,
+        country: s.Country,
+        operator: s.Operator,
         plugType: s.Plug_Type,
         powerKW: s.Power_kW,
-        operator: s.Operator,
         chargingPoints: s.Charging_Points,
-        country: s.Country,
         district: s.District,
+        province: s.Province,
+        pbt: s.PBT,
+        operationalYear: s.Operational_Year,
       }));
       setMarkers(mapped);
     } catch (err) {
@@ -359,26 +365,68 @@ export default function MapScreen() {
         <View style={styles.modalBackdrop}>
           <View style={styles.modalCard}>
             <Text style={styles.modalTitle}>{selectedMarker?.name ?? 'No marker selected'}</Text>
-            {selectedMarker?.plugType != null && (
-              <Text style={styles.modalSubtitle}>Plug: {selectedMarker.plugType}</Text>
-            )}
-            {selectedMarker?.powerKW != null && (
-              <Text style={styles.modalSubtitle}>Power: {selectedMarker.powerKW} kW</Text>
-            )}
-            {selectedMarker?.operator != null && (
-              <Text style={styles.modalSubtitle}>Operator: {selectedMarker.operator}</Text>
-            )}
-            {selectedMarker?.chargingPoints != null && (
-              <Text style={styles.modalSubtitle}>Points: {selectedMarker.chargingPoints}</Text>
-            )}
-            {(selectedMarker?.district ?? selectedMarker?.country) != null && (
-              <Text style={styles.modalSubtitle}>
-                {[selectedMarker?.district, selectedMarker?.country].filter(Boolean).join(', ')}
-              </Text>
-            )}
-            {routeDistance != null && (
-              <Text style={styles.modalSubtitle}>Distance: {(routeDistance / 1000).toFixed(2)} km</Text>
-            )}
+            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
+              {selectedMarker?.country != null && selectedMarker.country !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Country</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.country}</Text>
+                </View>
+              )}
+              {selectedMarker?.operator != null && selectedMarker.operator !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Operator</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.operator}</Text>
+                </View>
+              )}
+              {selectedMarker?.plugType != null && selectedMarker.plugType !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Plug Type</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.plugType}</Text>
+                </View>
+              )}
+              {selectedMarker?.powerKW != null && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Power</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.powerKW} kW</Text>
+                </View>
+              )}
+              {selectedMarker?.chargingPoints != null && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Charging Points</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.chargingPoints}</Text>
+                </View>
+              )}
+              {selectedMarker?.district != null && selectedMarker.district !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>District</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.district}</Text>
+                </View>
+              )}
+              {selectedMarker?.province != null && selectedMarker.province !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Province</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.province}</Text>
+                </View>
+              )}
+              {selectedMarker?.pbt != null && selectedMarker.pbt !== '' && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>PBT</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.pbt}</Text>
+                </View>
+              )}
+              {selectedMarker?.operationalYear != null && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Operational Year</Text>
+                  <Text style={styles.modalValue}>{selectedMarker.operationalYear}</Text>
+                </View>
+              )}
+              {routeDistance != null && (
+                <View style={styles.modalRow}>
+                  <Text style={styles.modalLabel}>Distance</Text>
+                  <Text style={styles.modalValue}>{(routeDistance / 1000).toFixed(2)} km</Text>
+                </View>
+              )}
+            </ScrollView>
             <View style={styles.modalActions}>
               <TouchableOpacity
                 style={[styles.modalButton, { backgroundColor: Colors.secondary }]}
@@ -509,6 +557,7 @@ const styles = StyleSheet.create({
     },
     modalCard: {
       width: '85%',
+      maxHeight: '80%',
       backgroundColor: '#fff',
       borderRadius: 16,
       padding: 16,
@@ -517,17 +566,37 @@ const styles = StyleSheet.create({
       shadowOpacity: 0.25,
       shadowRadius: 8,
       elevation: 6,
-      gap: 6,
     },
     modalTitle: {
       fontSize: 18,
       fontWeight: '700',
       color: '#222',
+      marginBottom: 10,
     },
-    modalSubtitle: {
-      fontSize: 14,
-      color: '#555',
-      marginTop: 2,
+    modalScroll: {
+      maxHeight: 260,
+    },
+    modalRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'flex-start',
+      paddingVertical: 5,
+      borderBottomWidth: StyleSheet.hairlineWidth,
+      borderBottomColor: '#eee',
+      gap: 8,
+    },
+    modalLabel: {
+      fontSize: 13,
+      color: '#888',
+      flexShrink: 0,
+      minWidth: 110,
+    },
+    modalValue: {
+      fontSize: 13,
+      color: '#222',
+      fontWeight: '500',
+      flex: 1,
+      textAlign: 'right',
     },
     modalActions: {
       marginTop: 12,
