@@ -5,7 +5,7 @@ import { ActivityIndicator, Modal, StyleSheet, Text, TouchableOpacity, View } fr
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { AlertButton, FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
+import { FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
 import { scanStations } from '@/services/dynamodb';
@@ -347,11 +347,7 @@ export default function MapScreen() {
         </View>
       )}
 
-      {/* Alert Button */}
-      <AlertButton
-        onPress={handleAlertPress}
-        style={StyleSheet.flatten([styles.alertButton, { bottom: 24 }])}
-      />
+      {/* Alert Button removed */}
 
       {/* Details Modal */}
       <Modal
@@ -469,10 +465,7 @@ const styles = StyleSheet.create({
   searchBar: {
     flex: 1,
   },
-  alertButton: {
-    position: 'absolute',
-    right: 16,
-  },
+  /* alertButton style removed */
   filterPanel: {
     position: 'absolute',
     right: 16,
