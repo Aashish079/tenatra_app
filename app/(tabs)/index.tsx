@@ -9,6 +9,15 @@ import { FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
 import { scanStations } from '@/services/dynamodb';
+import {
+  AStarResult,
+  buildGraph,
+  Edge,
+  evAstar,
+  GraphNode,
+  simulateTrip,
+  TripSimResult,
+} from '../utils';
 
 interface Marker {
   id: string;
@@ -57,6 +66,11 @@ export default function MapScreen() {
   const [isGeocoding, setIsGeocoding] = useState(false);
 
   const selectedMarker = markers.find((m) => m.id === selectedMarkerId) ?? null;
+
+  // EV planner state
+  const [isPlanning, setIsPlanning] = useState(false);
+  const [evResult, setEvResult] = useState<{ astar: AStarResult; sim: TripSimResult; queuedUsers: number; osrmDriveSec: number } | null>(null);
+  const [evError, setEvError] = useState<string | null>(null);
 
   // Only render markers inside the visible map area (+ 60 % buffer on each side).
   // Recomputes only when the region, filter settings, or marker list changes.
@@ -171,7 +185,7 @@ export default function MapScreen() {
   const fetchRoute = async (
     from: { latitude: number; longitude: number },
     to: { latitude: number; longitude: number }
-  ) => {
+  ): Promise<{ latitude: number; longitude: number }[]> => {
     try {
       const url = `https://router.project-osrm.org/route/v1/driving/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson`;
       const res = await fetch(url);
@@ -182,12 +196,15 @@ export default function MapScreen() {
         );
         setRouteCoords(coords);
         setRouteDistance(data.routes[0].distance);
+        return coords;
       }
     } catch (e) {
       console.warn('Route fetch failed, using straight line', e);
-      setRouteCoords([from, to]);
-      setRouteDistance(haversineDistance(from, to));
     }
+    const fallback = [from, to];
+    setRouteCoords(fallback);
+    setRouteDistance(haversineDistance(from, to));
+    return fallback;
   };
 
   const handleFilterPress = () => {
@@ -250,10 +267,127 @@ export default function MapScreen() {
     setSelectedMarkerId(markerId);
     setDetailsVisible(true);
     setRouteDistance(null);
+    setEvResult(null);
+    setEvError(null);
     const m = markers.find((x) => x.id === markerId);
     const origin = searchedLocation ?? userLocation;
     if (m && origin) {
       fetchDistance(origin, m.coordinate);
+    }
+  };
+
+  /**
+   * Run EV planner:
+   *   origin (GPS / searched location) → charger (clicked marker) → destination (searched location)
+   * Uses OSRM to get realistic edge distances, then runs multi-state A*.
+   */
+  const runEvPlan = async () => {
+    const charger = selectedMarker;
+    const origin = userLocation;
+    const destination = searchedLocation;
+    if (!charger || !origin) {
+      setEvError('Need GPS location and a selected charger.');
+      return;
+    }
+    setIsPlanning(true);
+    setEvResult(null);
+    setEvError(null);
+    try {
+      // ── fetch leg distances from OSRM ─────────────────────────────────────
+      const getOsrmLeg = async (
+        from: { latitude: number; longitude: number },
+        to: { latitude: number; longitude: number }
+      ): Promise<{ distM: number; durationSec: number; coords: { latitude: number; longitude: number }[] }> => {
+        try {
+          const url = `https://router.project-osrm.org/route/v1/driving/${from.longitude},${from.latitude};${to.longitude},${to.latitude}?overview=full&geometries=geojson`;
+          const res = await fetch(url);
+          const data = await res.json();
+          if (data.routes?.length > 0) {
+            return {
+              distM: data.routes[0].distance,
+              durationSec: data.routes[0].duration,
+              coords: data.routes[0].geometry.coordinates.map(([lon, lat]: [number, number]) => ({ latitude: lat, longitude: lon })),
+            };
+          }
+        } catch {}
+        // fallback: straight line
+        const distM = haversineDistance(from, to);
+        return { distM, durationSec: distM / (50 / 3.6), coords: [from, to] };
+      };
+
+      const legA = await getOsrmLeg(origin, charger.coordinate);
+      const legB = destination ? await getOsrmLeg(charger.coordinate, destination) : null;
+
+      // Speed limit derived from OSRM road network (distance ÷ duration).
+      // Drive time is computed purely as distM / speedMs — no traffic modifiers.
+      const speedA = legA.durationSec > 0 ? (legA.distM / legA.durationSec) * 3.6 : 50;
+      const speedB = legB && legB.durationSec > 0 ? (legB.distM / legB.durationSec) * 3.6 : 50;
+
+      // distM / (speedKph / 3.6) — pure physics, no congestion
+      const driveTimeSec =
+        (legA.distM / (speedA / 3.6)) +
+        (legB ? legB.distM / (speedB / 3.6) : 0);
+
+      // ── Build graph nodes & edges ─────────────────────────────────────────
+      // Randomly simulate 2–3 other EVs already queued at the station
+      const queuedUsers = Math.floor(Math.random() * 2) + 2; // 2 or 3
+      const MEAN_SERVICE_SEC = 1800; // 30 min average session
+
+      const nodes: GraphNode[] = [
+        { id: 'origin', coord: { latitude: origin.latitude, longitude: origin.longitude } },
+        {
+          id: 'charger',
+          coord: { latitude: charger.coordinate.latitude, longitude: charger.coordinate.longitude },
+          charger: {
+            stationId: charger.id,
+            maxPowerKW: charger.powerKW ?? 50,
+            plugCount: charger.chargingPoints ?? 2,
+            meanServiceTimeSec: MEAN_SERVICE_SEC,
+            currentQueueLength: queuedUsers,
+          },
+        },
+      ];
+      if (destination) {
+        nodes.push({ id: 'destination', coord: { latitude: destination.latitude, longitude: destination.longitude } });
+      }
+
+      const edges: Edge[] = [
+        { id: 'e_to_charger', fromNodeId: 'origin', toNodeId: 'charger', lengthM: legA.distM, baseSpeedKph: speedA },
+      ];
+      if (destination && legB) {
+        edges.push({ id: 'e_to_dest', fromNodeId: 'charger', toNodeId: 'destination', lengthM: legB.distM, baseSpeedKph: speedB });
+      }
+
+      // No traffic profiles — edges use flat baseSpeedKph from OSRM
+      const graph = buildGraph(nodes, edges);
+      const now = new Date();
+      const departTimeSec = now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+
+      const astar = evAstar(graph, 'origin', destination ? 'destination' : 'charger', {
+        batteryCapacityKWh: 50,
+        startSocKWh: 40,           // assume 80% full at departure
+        departTimeSec,
+        timeWeight: 0.8,
+        socStepKWh: 0.5,
+        maxExpansions: 10_000,
+      });
+
+      // Simulate battery drain along the OSRM waypoints (no congestion modifier)
+      const allWaypoints = [
+        ...legA.coords,
+        ...(legB ? legB.coords : []),
+      ];
+      const sim = simulateTrip(allWaypoints, 40, departTimeSec, speedA);
+
+      // OSRM drive time is the ground truth for display; A* is used only for
+      // SOC feasibility and charging stop decisions.
+      const osrmDriveSec = driveTimeSec;
+
+      setEvResult({ astar, sim, queuedUsers, osrmDriveSec });
+    } catch (e: any) {
+      setEvError(String(e));
+    } finally {
+      setIsPlanning(false);
     }
   };
 
@@ -426,14 +560,114 @@ export default function MapScreen() {
                   <Text style={styles.modalValue}>{(routeDistance / 1000).toFixed(2)} km</Text>
                 </View>
               )}
+              {/* EV Planner results */}
+              {evResult && (
+                <>
+                  <View style={styles.evDivider} />
+                  <Text style={styles.evSectionTitle}>EV Route Plan</Text>
+                  <View style={styles.modalRow}>
+                    <Text style={styles.modalLabel}>Users in queue</Text>
+                    <Text style={styles.modalValue}>{evResult.queuedUsers} vehicle{evResult.queuedUsers !== 1 ? 's' : ''}</Text>
+                  </View>
+                  <View style={styles.modalRow}>
+                    <Text style={styles.modalLabel}>Route found</Text>
+                    <Text style={[styles.modalValue, { color: evResult.astar.found ? '#2a9d8f' : '#e63946' }]}>
+                      {evResult.astar.found ? 'Yes' : 'No path'}
+                    </Text>
+                  </View>
+                  {evResult.astar.found && (
+                    <>
+                      {(() => {
+                        // Use OSRM duration as ground-truth drive time.
+                        // Only add charging overhead on top when a stop was made.
+                        const osrmMin = (evResult.osrmDriveSec / 60).toFixed(0);
+                        const stopTimeSec = evResult.astar.path.reduce((acc, p) =>
+                          acc + (p.charged ? p.charged.waitSec + p.charged.chargeSec : 0), 0);
+                        const totalMin = ((evResult.osrmDriveSec + stopTimeSec) / 60).toFixed(0);
+                        return (
+                          <>
+                            <View style={styles.modalRow}>
+                              <Text style={styles.modalLabel}>Drive time</Text>
+                              <Text style={styles.modalValue}>{osrmMin} min</Text>
+                            </View>
+                            {stopTimeSec > 0 && (
+                              <View style={styles.modalRow}>
+                                <Text style={styles.modalLabel}>Total trip time</Text>
+                                <Text style={styles.modalValue}>{totalMin} min (incl. stop)</Text>
+                              </View>
+                            )}
+                          </>
+                        );
+                      })()}
+                      <View style={styles.modalRow}>
+                        <Text style={styles.modalLabel}>Energy used</Text>
+                        <Text style={styles.modalValue}>{evResult.astar.totalEnergyKWh.toFixed(2)} kWh</Text>
+                      </View>
+                      <View style={styles.modalRow}>
+                        <Text style={styles.modalLabel}>Charging stops</Text>
+                        <Text style={styles.modalValue}>{evResult.astar.chargingStops}</Text>
+                      </View>
+                      {evResult.astar.path.find(p => p.charged) && (
+                        <View style={styles.modalRow}>
+                          <Text style={styles.modalLabel}>Charge at stop</Text>
+                          <Text style={styles.modalValue}>
+                            {evResult.astar.path.find(p => p.charged)!.charged!.energyKWh.toFixed(2)} kWh
+                            {' · '}{(evResult.astar.path.find(p => p.charged)!.charged!.waitSec / 60).toFixed(0)} min wait
+                          </Text>
+                        </View>
+                      )}
+                      <View style={styles.modalRow}>
+                        <Text style={styles.modalLabel}>Final SOC</Text>
+                        <Text style={styles.modalValue}>
+                          {evResult.astar.path.length > 0
+                            ? evResult.astar.path[evResult.astar.path.length - 1].socKWh.toFixed(2)
+                            : '—'} kWh
+                        </Text>
+                      </View>
+                      <View style={styles.modalRow}>
+                        <Text style={styles.modalLabel}>Simulated drain</Text>
+                        <Text style={styles.modalValue}>{(evResult.sim.totalEnergyWh / 1000).toFixed(2)} kWh</Text>
+                      </View>
+                      <View style={styles.modalRow}>
+                        <Text style={styles.modalLabel}>Range exhausted</Text>
+                        <Text style={[styles.modalValue, { color: evResult.sim.rangeExhausted ? '#e63946' : '#2a9d8f' }]}>
+                          {evResult.sim.rangeExhausted ? 'Yes ⚠️' : 'No ✓'}
+                        </Text>
+                      </View>
+                    </>
+                  )}
+                </>
+              )}
+              {evError && (
+                <Text style={{ color: '#e63946', fontSize: 12, marginTop: 6 }}>{evError}</Text>
+              )}
             </ScrollView>
             <View style={styles.modalActions}>
+              <TouchableOpacity
+                style={[styles.modalButton, { backgroundColor: '#2a9d8f' }]}
+                onPress={runEvPlan}
+                disabled={isPlanning}
+              >
+                {isPlanning
+                  ? <ActivityIndicator size="small" color="#fff" />
+                  : <Text style={styles.modalButtonText}>EV Plan</Text>
+                }
+              </TouchableOpacity>
               <TouchableOpacity
                 style={[styles.modalButton, { backgroundColor: Colors.secondary }]}
                 onPress={async () => {
                   const origin = searchedLocation ?? userLocation;
                   if (selectedMarker && origin) {
-                    await fetchRoute(origin, selectedMarker.coordinate);
+                    const coords = await fetchRoute(origin, selectedMarker.coordinate);
+                    setDetailsVisible(false);
+                    setTimeout(() => {
+                      if (mapRef.current && coords.length > 1) {
+                        mapRef.current.fitToCoordinates(coords, {
+                          edgePadding: { top: 80, right: 40, bottom: 80, left: 40 },
+                          animated: true,
+                        });
+                      }
+                    }, 350);
                   }
                 }}
               >
@@ -613,6 +847,17 @@ const styles = StyleSheet.create({
     modalButtonText: {
       color: '#fff',
       fontWeight: '600',
+    },
+    evDivider: {
+      height: 1,
+      backgroundColor: '#eee',
+      marginVertical: 8,
+    },
+    evSectionTitle: {
+      fontSize: 13,
+      fontWeight: '700',
+      color: '#2a9d8f',
+      marginBottom: 4,
     },
   filterChipActive: {
     borderColor: Colors.primary,
