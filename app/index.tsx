@@ -11,7 +11,7 @@ SplashScreen.preventAutoHideAsync();
 const { width, height } = Dimensions.get('window');
 
 // Splash background image from Figma
-const splashBackground = require('@/assets/images/7c85cc1afde3d03560e9b1577e20b236570c41cb.png');
+const splashBackground = require('@/assets/images/splash.png');
 
 export default function SplashScreenComponent() {
   const router = useRouter();
