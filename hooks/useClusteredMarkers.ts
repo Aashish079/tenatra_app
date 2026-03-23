@@ -1,6 +1,6 @@
-import { useMemo } from 'react';
-import Supercluster, { ClusterFeature, PointFeature } from 'supercluster';
-import { Region } from 'react-native-maps';
+import { useMemo } from "react";
+import { Region } from "react-native-maps";
+import Supercluster, { ClusterFeature, PointFeature } from "supercluster";
 
 export interface MarkerPoint {
   id: string;
@@ -42,23 +42,25 @@ function zoomFromLatitudeDelta(latitudeDelta: number): number {
  */
 export function useClusteredMarkers(
   markers: MarkerPoint[],
-  region: Region | null
+  region: Region | null,
 ): ClusteredItem[] {
   // Build + load the supercluster only when the markers array changes.
   const cluster = useMemo(() => {
     const sc = new Supercluster<{ marker: MarkerPoint }>({
-      radius: 60,
-      maxZoom: 16,
+      radius: 100,
+      maxZoom: 20,
     });
 
-    const points: PointFeature<{ marker: MarkerPoint }>[] = markers.map((m) => ({
-      type: 'Feature',
-      geometry: {
-        type: 'Point',
-        coordinates: [m.coordinate.longitude, m.coordinate.latitude],
-      },
-      properties: { marker: m },
-    }));
+    const points: PointFeature<{ marker: MarkerPoint }>[] = markers.map(
+      (m) => ({
+        type: "Feature",
+        geometry: {
+          type: "Point",
+          coordinates: [m.coordinate.longitude, m.coordinate.latitude],
+        },
+        properties: { marker: m },
+      }),
+    );
 
     sc.load(points);
     return sc;
@@ -76,12 +78,23 @@ export function useClusteredMarkers(
 
     const features = cluster.getClusters(
       [westLon, southLat, eastLon, northLat],
-      zoom
-    ) as Array<ClusterFeature<{ marker: MarkerPoint }> | PointFeature<{ marker: MarkerPoint }>>;
+      zoom,
+    ) as Array<
+      | ClusterFeature<{ marker: MarkerPoint }>
+      | PointFeature<{ marker: MarkerPoint }>
+    >;
+    console.log("Zoom:", zoom);
+    console.log("Region:", region);
+    console.log("Total features:", features.length);
+    console.log(
+      "Clusters:",
+      features.filter((f) => "cluster" in f.properties && f.properties.cluster)
+        .length,
+    );
 
     return features.map((f): ClusteredItem => {
       const [lon, lat] = f.geometry.coordinates;
-      if ('cluster' in f.properties && f.properties.cluster) {
+      if ("cluster" in f.properties && f.properties.cluster) {
         const cf = f as ClusterFeature<{ marker: MarkerPoint }>;
         return {
           isCluster: true,
