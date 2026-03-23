@@ -1,11 +1,13 @@
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
 import * as Location from 'expo-location';
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Modal, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import MapView, { Marker, Polyline, PROVIDER_GOOGLE, Region } from 'react-native-maps';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
+import { ClusterMarker } from '@/components/ClusterMarker';
 import { FilterButton, MapMarker, MarkerType, SearchBar } from '@/components/map';
+import { useClusteredMarkers } from '@/hooks/useClusteredMarkers';
 import { ThemedText } from '@/components/themed-text';
 import { Colors } from '@/constants/theme';
 import { scanStations } from '@/services/dynamodb';
@@ -47,6 +49,7 @@ const FALLBACK_REGION = {
 export default function MapScreen() {
   const insets = useSafeAreaInsets();
   const mapRef = useRef<MapView>(null);
+  const regionDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [region, setRegion] = useState<Region | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -72,25 +75,43 @@ export default function MapScreen() {
   const [evResult, setEvResult] = useState<{ astar: AStarResult; sim: TripSimResult; queuedUsers: number; osrmDriveSec: number } | null>(null);
   const [evError, setEvError] = useState<string | null>(null);
 
-  // Only render markers inside the visible map area (+ 60 % buffer on each side).
-  // Recomputes only when the region, filter settings, or marker list changes.
-  const VIEWPORT_BUFFER = 0.6;
-  const visibleMarkers = useMemo(() => {
-    const r = visibleRegion ?? region;
-    if (!r) return [];
-    const latMin = r.latitude - r.latitudeDelta * (0.5 + VIEWPORT_BUFFER);
-    const latMax = r.latitude + r.latitudeDelta * (0.5 + VIEWPORT_BUFFER);
-    const lonMin = r.longitude - r.longitudeDelta * (0.5 + VIEWPORT_BUFFER);
-    const lonMax = r.longitude + r.longitudeDelta * (0.5 + VIEWPORT_BUFFER);
-    return markers.filter((m) => {
-      const { latitude: lat, longitude: lon } = m.coordinate;
-      if (lat < latMin || lat > latMax || lon < lonMin || lon > lonMax) return false;
-      if (m.type === 'charging' && !filters.charging) return false;
-      if (m.type === 'carService' && !filters.carService) return false;
-      if (m.type === 'maintenance' && !filters.maintenance) return false;
-      return true;
-    });
-  }, [markers, visibleRegion, region, filters]);
+  // Debounced handler for region changes — updates visibleRegion at most once
+  // per 300 ms so clustering isn't recomputed on every scroll frame.
+  const handleRegionChangeComplete = useCallback((r: Region) => {
+    if (regionDebounceTimer.current !== null) {
+      clearTimeout(regionDebounceTimer.current);
+    }
+    regionDebounceTimer.current = setTimeout(() => {
+      setVisibleRegion(r);
+      regionDebounceTimer.current = null;
+    }, 300);
+  }, []);
+
+  // Clear any pending debounce timer when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (regionDebounceTimer.current !== null) {
+        clearTimeout(regionDebounceTimer.current);
+      }
+    };
+  }, []);
+
+  // Apply active filter types to the markers array before clustering so that
+  // filtered-out types are never fed into the cluster algorithm.
+  const filteredMarkers = useMemo(
+    () =>
+      markers.filter((m) => {
+        if (m.type === 'charging' && !filters.charging) return false;
+        if (m.type === 'carService' && !filters.carService) return false;
+        if (m.type === 'maintenance' && !filters.maintenance) return false;
+        return true;
+      }),
+    [markers, filters]
+  );
+
+  // Use the supercluster-based hook. Falls back to the initial region when the
+  // user hasn't panned yet (visibleRegion is null).
+  const clusteredItems = useClusteredMarkers(filteredMarkers, visibleRegion ?? region);
 
   useEffect(() => {
     getCurrentLocation();
@@ -426,7 +447,7 @@ export default function MapScreen() {
         style={styles.map}
         provider={PROVIDER_GOOGLE}
         initialRegion={region || FALLBACK_REGION}
-        onRegionChangeComplete={(r) => setVisibleRegion(r)}
+        onRegionChangeComplete={handleRegionChangeComplete}
         showsUserLocation
         showsMyLocationButton={false}
         zoomEnabled={true}
@@ -450,15 +471,23 @@ export default function MapScreen() {
             title={searchedLocation.label}
           />
         )}
-        {visibleMarkers.map((marker) => (
-          <MapMarker
-            key={marker.id}
-            name={marker.name}
-            coordinate={marker.coordinate}
-            type={marker.type}
-            onPress={() => handleMarkerPress(marker.id)}
-          />
-        ))}
+        {clusteredItems.map((item) =>
+          item.isCluster ? (
+            <ClusterMarker
+              key={`cluster-${item.clusterId}`}
+              coordinate={item.coordinate}
+              count={item.count}
+            />
+          ) : (
+            <MapMarker
+              key={item.id}
+              name={item.name}
+              coordinate={item.coordinate}
+              type={item.type as MarkerType}
+              onPress={() => handleMarkerPress(item.id)}
+            />
+          )
+        )}
       </MapView>
 
       {/* Search Bar Container */}
