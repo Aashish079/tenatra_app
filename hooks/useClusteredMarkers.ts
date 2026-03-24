@@ -83,14 +83,6 @@ export function useClusteredMarkers(
       | ClusterFeature<{ marker: MarkerPoint }>
       | PointFeature<{ marker: MarkerPoint }>
     >;
-    console.log("Zoom:", zoom);
-    console.log("Region:", region);
-    console.log("Total features:", features.length);
-    console.log(
-      "Clusters:",
-      features.filter((f) => "cluster" in f.properties && f.properties.cluster)
-        .length,
-    );
 
     return features.map((f): ClusteredItem => {
       const [lon, lat] = f.geometry.coordinates;

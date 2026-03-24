@@ -22,6 +22,17 @@ export interface ChargingStation {
   Operational_Year?: number;
 }
 
+export interface BoundingBox {
+  north: number;
+  south: number;
+  east: number;
+  west: number;
+}
+
+let allStationsCache: ChargingStation[] | null = null;
+let bboxSupportDetected = false;
+let backendSupportsBbox: boolean | null = null;
+
 // Raw shape returned by the API — all numeric fields may arrive as strings.
 // Extra normalized fields (e.g. Latitude_Normalized) are captured by the index
 // signature and intentionally excluded from the public ChargingStation type.
@@ -49,16 +60,7 @@ function toNum(v: string | number | undefined | null): number | undefined {
   return isNaN(n) ? undefined : n;
 }
 
-export async function scanStations(): Promise<ChargingStation[]> {
-  const response = await fetch(API_URL);
-  if (!response.ok) {
-    throw new Error(
-      `Failed to fetch stations: ${response.status} ${response.statusText}`,
-    );
-  }
-  // Cast to the raw shape first — the API sends numbers as strings.
-  const data: RawStation[] = await response.json();
-
+function normalizeStations(data: RawStation[]): ChargingStation[] {
   return data
     .filter((s) => {
       // Reject records where Latitude or Longitude are missing, empty, or
@@ -85,4 +87,72 @@ export async function scanStations(): Promise<ChargingStation[]> {
       Charging_Points: toNum(s.Charging_Points),
       Operational_Year: toNum(s.Operational_Year),
     }));
+}
+
+function filterStationsByBbox(
+  stations: ChargingStation[],
+  bbox: BoundingBox,
+): ChargingStation[] {
+  return stations.filter(
+    (s) =>
+      s.Latitude >= bbox.south &&
+      s.Latitude <= bbox.north &&
+      s.Longitude >= bbox.west &&
+      s.Longitude <= bbox.east,
+  );
+}
+
+export async function scanStations(
+  signal?: AbortSignal,
+): Promise<ChargingStation[]> {
+  const response = await fetch(API_URL, { signal });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch stations: ${response.status} ${response.statusText}`,
+    );
+  }
+  // Cast to the raw shape first — the API sends numbers as strings.
+  const data: RawStation[] = await response.json();
+
+  return normalizeStations(data);
+}
+
+export async function scanStationsInViewport(
+  bbox: BoundingBox,
+  signal?: AbortSignal,
+): Promise<ChargingStation[]> {
+  if (backendSupportsBbox === false && allStationsCache) {
+    return filterStationsByBbox(allStationsCache, bbox);
+  }
+
+  const params = new URLSearchParams({
+    north: String(bbox.north),
+    south: String(bbox.south),
+    east: String(bbox.east),
+    west: String(bbox.west),
+  });
+
+  const response = await fetch(`${API_URL}?${params.toString()}`, { signal });
+  if (!response.ok) {
+    throw new Error(
+      `Failed to fetch stations in viewport: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const data: RawStation[] = await response.json();
+  const normalized = normalizeStations(data);
+  const filtered = filterStationsByBbox(normalized, bbox);
+
+  // If backend ignores bbox params, keep a local cache and avoid refetching
+  // full payload on every pan/zoom.
+  if (!bboxSupportDetected) {
+    bboxSupportDetected = true;
+    backendSupportsBbox = normalized.length === filtered.length ? false : true;
+    if (backendSupportsBbox === false) {
+      allStationsCache = normalized;
+    }
+  }
+
+  // Safety filter in case backend ignores bbox params.
+  return filtered;
 }

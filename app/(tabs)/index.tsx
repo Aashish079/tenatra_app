@@ -1,12 +1,6 @@
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import * as Location from "expo-location";
-import {
-  useCallback,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Modal,
@@ -27,13 +21,14 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { ClusterMarker } from "@/components/ClusterMarker";
 import {
   FilterButton,
+  MapMarker,
   MarkerType,
-  SearchBar
+  SearchBar,
 } from "@/components/map";
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useClusteredMarkers } from "@/hooks/useClusteredMarkers";
-import { scanStations } from "@/services/dynamodb";
+import { BoundingBox, scanStationsInViewport } from "@/services/dynamodb";
 import {
   AStarResult,
   buildGraph,
@@ -75,6 +70,7 @@ export default function MapScreen() {
   const regionDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
+  const markersAbortRef = useRef<AbortController | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [region, setRegion] = useState<Region | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -160,14 +156,42 @@ export default function MapScreen() {
   );
 
   useEffect(() => {
+    const clusterCount = clusteredItems.filter((x) => x.isCluster).length;
+    const markerCount = clusteredItems.length - clusterCount;
+    console.log(
+      `[map-debug] markers=${markers.length} filtered=${filteredMarkers.length} clusteredItems=${clusteredItems.length} clusters=${clusterCount} singles=${markerCount}`,
+    );
+  }, [markers.length, filteredMarkers.length, clusteredItems]);
+
+  useEffect(() => {
     getCurrentLocation();
-    fetchMarkers();
   }, []);
 
-  const fetchMarkers = async () => {
+  useEffect(() => {
+    return () => {
+      markersAbortRef.current?.abort();
+    };
+  }, []);
+
+  const fetchMarkersForRegion = useCallback(async (r: Region) => {
+    const bbox: BoundingBox = {
+      north: r.latitude + r.latitudeDelta / 2,
+      south: r.latitude - r.latitudeDelta / 2,
+      east: r.longitude + r.longitudeDelta / 2,
+      west: r.longitude - r.longitudeDelta / 2,
+    };
+
+    // Cancel any in-flight request when viewport changes.
+    markersAbortRef.current?.abort();
+    markersAbortRef.current = new AbortController();
+
     try {
       setMarkersLoading(true);
-      const stations = await scanStations();
+      const startedAt = Date.now();
+      const stations = await scanStationsInViewport(
+        bbox,
+        markersAbortRef.current.signal,
+      );
       const mapped: Marker[] = stations.map((s) => ({
         id: s.Station_ID,
         name: s.Station_Name,
@@ -183,13 +207,28 @@ export default function MapScreen() {
         pbt: s.PBT,
         operationalYear: s.Operational_Year,
       }));
-      setMarkers(mapped);
+      setMarkers((prev) => {
+        const sameLength = prev.length === mapped.length;
+        const sameOrderAndIds =
+          sameLength && prev.every((p, i) => p.id === mapped[i].id);
+        return sameOrderAndIds ? prev : mapped;
+      });
+      console.log(
+        `[map-debug] viewportFetch ms=${Date.now() - startedAt} stations=${mapped.length} bbox=[N:${bbox.north.toFixed(4)} S:${bbox.south.toFixed(4)} E:${bbox.east.toFixed(4)} W:${bbox.west.toFixed(4)}]`,
+      );
     } catch (err) {
+      if ((err as Error).name === "AbortError") return;
       console.error("Failed to load stations from DynamoDB:", err);
     } finally {
       setMarkersLoading(false);
     }
-  };
+  }, []);
+
+  useEffect(() => {
+    const targetRegion = visibleRegion ?? region;
+    if (!targetRegion) return;
+    fetchMarkersForRegion(targetRegion);
+  }, [visibleRegion, region, fetchMarkersForRegion]);
 
   const getCurrentLocation = async () => {
     try {
@@ -216,6 +255,7 @@ export default function MapScreen() {
       };
 
       setRegion(newRegion);
+      setVisibleRegion(newRegion);
       setUserLocation({
         latitude: location.coords.latitude,
         longitude: location.coords.longitude,
@@ -225,6 +265,7 @@ export default function MapScreen() {
       console.error("Error getting location:", error);
       setLocationError("Could not get current location");
       setRegion(FALLBACK_REGION);
+      setVisibleRegion(FALLBACK_REGION);
       setIsLoading(false);
     }
   };
@@ -570,24 +611,22 @@ export default function MapScreen() {
             title={searchedLocation.label}
           />
         )}
-        {clusteredItems.map(
-          (item) =>
-            item.isCluster ? (
-              <ClusterMarker
-                key={`cluster-${item.clusterId}`}
-                coordinate={item.coordinate}
-                count={item.count}
-              />
-            ) : null,
-          // ) : (
-          //   <MapMarker
-          //     key={item.id}
-          //     name={item.name}
-          //     coordinate={item.coordinate}
-          //     type={item.type as MarkerType}
-          //     onPress={() => handleMarkerPress(item.id)}
-          //   />
-          // )
+        {clusteredItems.map((item) =>
+          item.isCluster ? (
+            <ClusterMarker
+              key={`cluster-${item.clusterId}`}
+              coordinate={item.coordinate}
+              count={item.count}
+            />
+          ) : (
+            <MapMarker
+              key={item.id}
+              name={item.name}
+              coordinate={item.coordinate}
+              type={item.type as MarkerType}
+              onPress={() => handleMarkerPress(item.id)}
+            />
+          ),
         )}
       </MapView>
 
