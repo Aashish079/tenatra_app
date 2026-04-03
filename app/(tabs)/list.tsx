@@ -17,7 +17,7 @@ interface NearbyStation extends ChargingStation {
 
 // DEV: Toggle to use a mock location for testing. Default is false.
 // Set to `true` and edit `MOCK_LOCATION` to test from a specific lat/lon.
-const USE_MOCK_LOCATION = true;
+const USE_MOCK_LOCATION = false;
 const MOCK_LOCATION: { latitude: number; longitude: number } = { latitude: 5.419102983272989, longitude: 100.32032643665518 };
 
 /** Haversine distance in kilometres between two coordinates */

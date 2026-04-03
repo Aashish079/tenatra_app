@@ -5,6 +5,9 @@ interface User {
   id: number;
   name: string;
   email: string;
+  role: number;
+  created_at: string;
+  last_login: string | null;
 }
 
 interface Session {
@@ -20,6 +23,7 @@ interface AuthContextType {
   login: (email: string, password: string) => Promise<void>;
   register: (name: string, email: string, password: string) => Promise<void>;
   logout: () => Promise<void>;
+  updateProfile: (data: { name?: string; email?: string; password?: string }) => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -53,7 +57,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
             },
           });
           
-          if (!response.ok) {
+          if (response.ok) {
+            const freshUser = await response.json();
+            const updatedUser: User = {
+              id: freshUser.id,
+              name: freshUser.name,
+              email: freshUser.email,
+              role: freshUser.role,
+              created_at: freshUser.created_at,
+              last_login: freshUser.last_login ?? null,
+            };
+            setUser(updatedUser);
+            await SecureStore.setItemAsync('user_data', JSON.stringify(updatedUser));
+          } else {
             // Token is invalid, clear storage
             await clearStorage();
           }
@@ -99,6 +115,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         id: data.id,
         name: data.name || email.split('@')[0],
         email: data.email,
+        role: data.role ?? 0,
+        created_at: data.created_at,
+        last_login: data.last_login ?? null,
       };
 
       await SecureStore.setItemAsync('session_token', data.session.token);
@@ -143,6 +162,34 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
   };
 
+  const updateProfile = async (data: { name?: string; email?: string; password?: string }) => {
+    const token = await SecureStore.getItemAsync('session_token');
+    if (!token) throw new Error('Not authenticated');
+    const response = await fetch(`${API_BASE_URL}/auth/me`, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(data),
+    });
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.detail || 'Update failed');
+    }
+    const updated = await response.json();
+    const updatedUser: User = {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      created_at: updated.created_at,
+      last_login: updated.last_login ?? null,
+    };
+    setUser(updatedUser);
+    await SecureStore.setItemAsync('user_data', JSON.stringify(updatedUser));
+  };
+
   return (
     <AuthContext.Provider
       value={{
@@ -153,6 +200,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         login,
         register,
         logout,
+        updateProfile,
       }}
     >
       {children}
