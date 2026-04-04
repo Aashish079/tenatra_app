@@ -28,7 +28,7 @@ import {
 import { ThemedText } from "@/components/themed-text";
 import { Colors } from "@/constants/theme";
 import { useClusteredMarkers } from "@/hooks/useClusteredMarkers";
-import { BoundingBox, scanStationsInViewport } from "@/services/dynamodb";
+import { scanStations } from "@/services/dynamodb";
 import {
   AStarResult,
   buildGraph,
@@ -70,7 +70,7 @@ export default function MapScreen() {
   const regionDebounceTimer = useRef<ReturnType<typeof setTimeout> | null>(
     null,
   );
-  const markersAbortRef = useRef<AbortController | null>(null);
+
   const [searchQuery, setSearchQuery] = useState("");
   const [region, setRegion] = useState<Region | null>(null);
   const [isLoading, setIsLoading] = useState(true);
@@ -167,68 +167,42 @@ export default function MapScreen() {
     getCurrentLocation();
   }, []);
 
+  // Fetch all stations once on startup — the backend always returns all 625
+  // stations regardless of bbox params, so there is no benefit to per-viewport
+  // requests. Supercluster handles viewport visibility client-side.
   useEffect(() => {
-    return () => {
-      markersAbortRef.current?.abort();
-    };
-  }, []);
-
-  const fetchMarkersForRegion = useCallback(async (r: Region) => {
-    const bbox: BoundingBox = {
-      north: r.latitude + r.latitudeDelta / 2,
-      south: r.latitude - r.latitudeDelta / 2,
-      east: r.longitude + r.longitudeDelta / 2,
-      west: r.longitude - r.longitudeDelta / 2,
-    };
-
-    // Cancel any in-flight request when viewport changes.
-    markersAbortRef.current?.abort();
-    markersAbortRef.current = new AbortController();
-
-    try {
-      setMarkersLoading(true);
-      const startedAt = Date.now();
-      const stations = await scanStationsInViewport(
-        bbox,
-        markersAbortRef.current.signal,
-      );
-      const mapped: Marker[] = stations.map((s) => ({
-        id: s.Station_ID,
-        name: s.Station_Name,
-        coordinate: { latitude: s.Latitude, longitude: s.Longitude },
-        type: "charging" as MarkerType,
-        country: s.Country,
-        operator: s.Operator,
-        plugType: s.Plug_Type,
-        powerKW: s.Power_kW,
-        chargingPoints: s.Charging_Points,
-        district: s.District,
-        province: s.Province,
-        pbt: s.PBT,
-        operationalYear: s.Operational_Year,
-      }));
-      setMarkers((prev) => {
-        const sameLength = prev.length === mapped.length;
-        const sameOrderAndIds =
-          sameLength && prev.every((p, i) => p.id === mapped[i].id);
-        return sameOrderAndIds ? prev : mapped;
-      });
-      console.log(
-        `[map-debug] viewportFetch ms=${Date.now() - startedAt} stations=${mapped.length} bbox=[N:${bbox.north.toFixed(4)} S:${bbox.south.toFixed(4)} E:${bbox.east.toFixed(4)} W:${bbox.west.toFixed(4)}]`,
-      );
-    } catch (err) {
-      if ((err as Error).name === "AbortError") return;
-      console.error("Failed to load stations from DynamoDB:", err);
-    } finally {
-      setMarkersLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    const targetRegion = visibleRegion ?? region;
-    if (!targetRegion) return;
-    fetchMarkersForRegion(targetRegion);
-  }, [visibleRegion, region, fetchMarkersForRegion]);
+    if (!region) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setMarkersLoading(true);
+        const stations = await scanStations();
+        if (cancelled) return;
+        const mapped: Marker[] = stations.map((s) => ({
+          id: s.Station_ID,
+          name: s.Station_Name,
+          coordinate: { latitude: s.Latitude, longitude: s.Longitude },
+          type: "charging" as MarkerType,
+          country: s.Country,
+          operator: s.Operator,
+          plugType: s.Plug_Type,
+          powerKW: s.Power_kW,
+          chargingPoints: s.Charging_Points,
+          district: s.District,
+          province: s.Province,
+          pbt: s.PBT,
+          operationalYear: s.Operational_Year,
+        }));
+        setMarkers(mapped);
+        console.log(`[map-debug] loaded ${mapped.length} stations`);
+      } catch (err) {
+        console.error("Failed to load stations:", err);
+      } finally {
+        if (!cancelled) setMarkersLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [region]);
 
   const getCurrentLocation = async () => {
     try {

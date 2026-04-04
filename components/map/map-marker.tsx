@@ -1,6 +1,5 @@
 import { Colors } from '@/constants/theme';
 import MaterialIcons from '@expo/vector-icons/MaterialIcons';
-import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Marker } from 'react-native-maps';
 
@@ -41,7 +40,7 @@ const markerConfig: Record<MarkerType, { icon: keyof typeof MaterialIcons.glyphM
 
 // No callout text; popup removed per request
 
-export function MapMarker({ coordinate, type, onPress, name }: MapMarkerProps) {
+export function MapMarker({ coordinate, type, onPress }: MapMarkerProps) {
   const config = markerConfig[type];
   const isLarge = config.size === 'large';
 
@@ -50,14 +49,15 @@ export function MapMarker({ coordinate, type, onPress, name }: MapMarkerProps) {
       coordinate={coordinate}
       onPress={onPress}
       anchor={{ x: 0.5, y: 1 }}
+      tracksViewChanges={true}
     >
       {isLarge ? (
-        <View style={[styles.largeMarker, { backgroundColor: config.color }]}> 
+        <View style={[styles.largeMarker, { backgroundColor: config.color }]} collapsable={false}>
           <MaterialIcons name={config.icon} size={24} color="white" />
         </View>
       ) : (
         <View style={styles.wrapper} collapsable={false}>
-          <View style={[styles.markerContainer, { backgroundColor: config.color }]}> 
+          <View style={[styles.markerContainer, { backgroundColor: config.color }]} collapsable={false}>
             <MaterialIcons name={config.icon} size={16} color="white" />
           </View>
         </View>
@@ -69,7 +69,7 @@ export function MapMarker({ coordinate, type, onPress, name }: MapMarkerProps) {
 const styles = StyleSheet.create({
   wrapper: {
     width: 36,
-    height: 46, // 36 circle + ~10 tail
+    height: 46,
     alignItems: 'center',
   },
   markerContainer: {

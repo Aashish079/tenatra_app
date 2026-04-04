@@ -105,6 +105,7 @@ function filterStationsByBbox(
 export async function scanStations(
   signal?: AbortSignal,
 ): Promise<ChargingStation[]> {
+  if (allStationsCache) return allStationsCache;
   const response = await fetch(API_URL, { signal });
   if (!response.ok) {
     throw new Error(
@@ -113,8 +114,8 @@ export async function scanStations(
   }
   // Cast to the raw shape first — the API sends numbers as strings.
   const data: RawStation[] = await response.json();
-
-  return normalizeStations(data);
+  allStationsCache = normalizeStations(data);
+  return allStationsCache;
 }
 
 export async function scanStationsInViewport(
